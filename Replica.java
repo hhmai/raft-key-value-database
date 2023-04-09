@@ -113,7 +113,7 @@ public class Replica {
                                 .put("MID", jsonMsg.getString("MID"));
                         this.send(redirectJson.toString());
                 }
-            } catch (SocketTimeoutException e) {
+            } catch (JSONException | SocketTimeoutException e) {
                 heartBeat--;
             }
         }
