@@ -65,7 +65,7 @@ public class Replica {
                         .put("MID", "LEADERMID")
                         .put("entries[]", "");
                 this.send(heartbeat.toString());
-                this.heartBeat = 300;
+                this.heartBeat = 200;
             }
             try {
                 this.socket.receive(packet);
