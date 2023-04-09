@@ -1,0 +1,3 @@
+#!/bin/bash
+java -cp json-20220924.jar:. Replica "$@"
+
