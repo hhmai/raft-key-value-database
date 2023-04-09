@@ -22,7 +22,7 @@ public class Replica {
     /* Leader vars */
     private String leader = "0001";
     private int electionTimer = 1000;
-    private int heartBeat = 25;
+    private int heartBeat = 4000;
 
 
     public Replica(int port, String id, String[] others) throws IOException {
