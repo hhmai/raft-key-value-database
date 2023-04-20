@@ -1,4 +1,4 @@
 default:
-	javac -cp json-20220924.jar Replica.java
+	javac -cp json-20220924.jar RaftNode.java
 clean: 
-	rm -f Replica.class
+	rm -f RaftNode.class
