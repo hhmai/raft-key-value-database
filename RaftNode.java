@@ -191,7 +191,7 @@ public class RaftNode {
             case "AppendEntry":
                 // if follower receives heartbeat and it has a higher current term, that is the new leader
                 if (jsonMsg.getInt("term") > currentTerm) {
-                    if (!Objects.equals(jsonMsg.get("entries"), "")) {
+                    if (!Objects.equals(jsonMsg.get("key"), "")) {
                         //this.database = jsonMsg.get("entries");
                         this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
                     }
