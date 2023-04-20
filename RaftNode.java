@@ -10,7 +10,7 @@ import java.util.Random;
 
 public class RaftNode {
 
-    private class Entry {
+    private static class Entry {
         String key;
         String value;
 
@@ -192,8 +192,8 @@ public class RaftNode {
                 // if follower receives heartbeat and it has a higher current term, that is the new leader
                 if (jsonMsg.getInt("term") > currentTerm) {
                     if (!Objects.equals(jsonMsg.get("entries"), "")) {
-                        this.database = jsonMsg.get("entries");
-                        //this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
+                        //this.database = jsonMsg.get("entries");
+                        this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
                     }
                     this.leader = jsonMsg.getString("src");
                     this.currentTerm = jsonMsg.getInt("term");
