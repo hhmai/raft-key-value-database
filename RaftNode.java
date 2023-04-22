@@ -10,6 +10,9 @@ import java.util.Random;
 
 public class RaftNode {
 
+    /**
+     * Class representing a single entry in the log
+     */
     private static class Entry {
         String key;
         String value;
@@ -20,10 +23,13 @@ public class RaftNode {
         }
     }
 
-    private HashMap<String, String> database = new HashMap<>();
-    private ArrayList<Entry> log = new ArrayList<>();
+    private HashMap<String, String> database = new HashMap<>(); //<Key, Value> pair
+    private ArrayList<Entry> logEntry = new ArrayList<>(); // list of all entries in order received
     private String leader;
 
+    /**
+     * Node states
+     */
     public enum State {
         FOLLOWER,
         CANDIDATE,
@@ -36,16 +42,27 @@ public class RaftNode {
     private String[] others;
     private State state;
     private int currentTerm;
-    private final long ELECTION_TIMEOUT_MAX = new Random().nextInt(500 - 400) + 400;
-    private static final int HEARTBEAT_INTERVAL_MS = new Random().nextInt(100 - 50) + 50;;
+    //private int commitIndex;
+    private final long ELECTION_TIMEOUT_MAX = new Random().nextInt(600 - 500) + 500;
+    private static final int HEARTBEAT_INTERVAL_MS = new Random().nextInt(400 - 300) + 300;
+    private static final int FOLLOWER_REPLY_MAX = 650;
     private long lastHeartbeat = System.currentTimeMillis() + 3000;
+    private long lastFollowerReply = System.currentTimeMillis() + 4000;
     private int votesReceived = 0;
-    // TODO: add log and other required fields
     private DatagramSocket socket;
 
+    /**
+     * Represents a single node in the RAFT protocol
+     * @param port
+     * @param id
+     * @param others
+     * @throws IOException
+     * @throws InterruptedException
+     */
     public RaftNode(int port, String id, String[] others) throws IOException, InterruptedException {
         this.state = State.FOLLOWER;
         this.currentTerm = 0;
+        //this.commitIndex = 0;
         this.port = port;
         this.id = id;
         this.others = others;
@@ -76,34 +93,27 @@ public class RaftNode {
         this.socket.send(packet);
     }
 
+    /**
+     * Runs the raft protocol
+     * @throws IOException
+     */
     private void run() throws IOException {
         while (true) {
-            if (state != State.LEADER && System.currentTimeMillis() - lastHeartbeat > ELECTION_TIMEOUT_MAX) {
+            if (state == State.CANDIDATE && System.currentTimeMillis() - lastHeartbeat > ELECTION_TIMEOUT_MAX) {
+                // am candidate, election timeout, no heartbeat from Leader, start new election
+                startElection();
+            }
+            if (state == State.FOLLOWER && System.currentTimeMillis() - lastHeartbeat > ELECTION_TIMEOUT_MAX) {
                 // am follower, no heartbeat from Leader, start new election
-                state = State.CANDIDATE;
-                currentTerm++;
-                votesReceived = 1; // Vote for self
-                JSONObject leaderJSON = new JSONObject()
-                        .put("src", this.id)
-                        .put("dst", BROADCAST)
-                        .put("type", "RequestVote")
-                        .put("MID", "LEADERMID")
-                        .put("leader", this.leader)
-                        .put("term", this.currentTerm);
-                this.send(leaderJSON.toString());
+                startElection();
             } else if (state == State.LEADER && System.currentTimeMillis() - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
                 // am leader, need to send a heartbeat
-                JSONObject heartbeat = new JSONObject()
-                        .put("src", this.id)
-                        .put("dst", BROADCAST)
-                        .put("type", "AppendEntry")
-                        .put("leader", this.id)
-                        .put("MID", "LEADERMID")
-                        .put("key", "")
-                        .put("value", "")
-                        .put("term", this.currentTerm);
-                this.send(heartbeat.toString());
-                lastHeartbeat = System.currentTimeMillis();
+                sendHeartBeatJson();
+            }
+            if (state == State.LEADER && System.currentTimeMillis() - lastFollowerReply > FOLLOWER_REPLY_MAX) {
+                // am leader, no reply from followers, possible minority?
+                //System.out.printf("DNR FOLLOWER REPLIES FROM " + this.id);
+                startElection();
             }
 
             // handle incoming requests
@@ -114,7 +124,9 @@ public class RaftNode {
                 this.socket.receive(packet);
                 String msg = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
                 JSONObject jsonMsg = new JSONObject(msg);
-                //System.out.printf("Received message '%s'%n", msg);
+                //System.out.printf("Received message '%s'%n\n", msg);
+                //System.out.printf(this.id + " State = " + this.state + " Leader = " + this.leader
+                 //       + " Term = " + this.currentTerm + " Votes = " + this.votesReceived + System.lineSeparator());
                 if (state.equals(State.LEADER)) {
                     this.leaderReceive(jsonMsg);
                 } else if (state.equals(State.FOLLOWER)) {
@@ -127,16 +139,59 @@ public class RaftNode {
         }
     }
 
+    /**
+     * Starts the election process, turns into a candidate, increases term by 1, and votes for itself
+     * @throws IOException
+     */
+    private void startElection() throws IOException {
+        state = State.CANDIDATE;
+        currentTerm++;
+        votesReceived = 1; // Vote for self
+        this.lastHeartbeat = System.currentTimeMillis();
+        JSONObject leaderJSON = new JSONObject()
+                .put("src", this.id)
+                .put("dst", BROADCAST)
+                .put("type", "RequestVote")
+                .put("MID", "LEADERMID")
+                .put("leader", this.leader)
+                .put("term", this.currentTerm);
+        this.send(leaderJSON.toString());
+    }
+
+    /**
+     * Send an empty append entry message
+     * @throws IOException
+     */
+    private void sendHeartBeatJson() throws IOException {
+        JSONObject heartbeat = new JSONObject()
+                .put("src", this.id)
+                .put("dst", BROADCAST)
+                .put("type", "AppendEntry")
+                .put("leader", this.id)
+                .put("MID", "LEADERMID")
+                .put("key", "")
+                .put("value", "")
+                .put("term", this.currentTerm)
+                .put("commitIndex", this.logEntry.size());
+        this.send(heartbeat.toString());
+        lastHeartbeat = System.currentTimeMillis();
+    }
+
+    /**
+     * Receive parameters for candidates
+     * @param jsonMsg
+     * @throws IOException
+     */
     private void candidateReceive(JSONObject jsonMsg) throws IOException {
         switch (jsonMsg.getString("type")) {
             case "AppendEntry":
-                // if a candidate receives a heartbeat with higher term, that is the leader else if lower keep waiting
-                if (jsonMsg.getInt("term") > currentTerm) {
+                // if a candidate receives a heartbeat with higher or equal term, that is the leader else if lower keep waiting
+                if (jsonMsg.getInt("term") >= currentTerm || jsonMsg.getInt("commitIndex") >= this.logEntry.size()) {
                     this.state = State.FOLLOWER;
+                    this.leader = jsonMsg.getString("src");
                     this.currentTerm = jsonMsg.getInt("term");
-                    if (!Objects.equals(jsonMsg.getString("key"), "")) {
-                        this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
-                    }
+                    this.lastHeartbeat = System.currentTimeMillis();
+                    updateLog(jsonMsg);
                 }
                 break;
             case "RequestVote":
@@ -144,6 +199,7 @@ public class RaftNode {
                 if (jsonMsg.getInt("term") > currentTerm) {
                     this.state = State.FOLLOWER;
                     this.currentTerm = jsonMsg.getInt("term");
+                    this.lastHeartbeat = System.currentTimeMillis();
                     JSONObject vote = new JSONObject()
                             .put("src", this.id)
                             .put("dst", jsonMsg.getString("src"))
@@ -160,7 +216,11 @@ public class RaftNode {
                 if (votesReceived >= 2) {
                     this.state = State.LEADER;
                     this.leader = this.id;
-                    currentTerm++;
+                    currentTerm = currentTerm + 1;
+                    this.lastFollowerReply = System.currentTimeMillis();
+                    // am leader, need to send a heartbeat
+                    sendHeartBeatJson();
+                    this.votesReceived = 0;
                 }
                 break;
             default:
@@ -175,6 +235,11 @@ public class RaftNode {
         }
     }
 
+    /**
+     * Receive parameters for followers
+     * @param jsonMsg
+     * @throws IOException
+     */
     private void followerReceive(JSONObject jsonMsg) throws IOException {
         switch (jsonMsg.getString("type")) {
             case "put":
@@ -189,21 +254,24 @@ public class RaftNode {
                 this.send(redirectJson.toString());
                 break;
             case "AppendEntry":
-                // if follower receives heartbeat and it has a higher current term, that is the new leader
-                if (jsonMsg.getInt("term") > currentTerm) {
-                    if (!Objects.equals(jsonMsg.get("key"), "")) {
-                        //this.database = jsonMsg.get("entries");
-                        this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
-                    }
+                // if follower receives append entry, and it has a higher or equal current term and commit index, that is the leader
+                if (jsonMsg.getInt("term") >= currentTerm && jsonMsg.getInt("commitIndex") >= this.logEntry.size()) {
+                    this.state = State.FOLLOWER;
+                    this.votesReceived = 0;
                     this.leader = jsonMsg.getString("src");
                     this.currentTerm = jsonMsg.getInt("term");
                     this.lastHeartbeat = System.currentTimeMillis();
-                } else if (jsonMsg.getInt("term") == currentTerm) {
-                    if (!Objects.equals(jsonMsg.getString("key"), "")) {
-                        this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
-                    }
-                    // if a follower receives a heartbeat and it has the same current term,
-                    this.lastHeartbeat = System.currentTimeMillis();
+
+                    updateLog(jsonMsg);
+
+                    // send reply
+                    JSONObject replyToAppend = new JSONObject()
+                            .put("src", this.id)
+                            .put("dst", jsonMsg.getString("src"))
+                            .put("leader", this.leader)
+                            .put("type", "replyToAppend")
+                            .put("MID", "replyToAppendMID");
+                    this.send(replyToAppend.toString());
                 }
                 break;
             case "RequestVote":
@@ -218,35 +286,62 @@ public class RaftNode {
                         .put("leader", this.leader)
                         .put("type", "Vote")
                         .put("MID", "VoteMID")
-                        .put("term", this.currentTerm);
+                        .put("term", this.currentTerm)
+                        .put("commitIndex", this.logEntry.size());
                 this.send(vote.toString());
                 break;
             default:
         }
     }
 
+    /**
+     * Receive parameters for leaders
+     * @param jsonMsg
+     * @throws IOException
+     */
     private void leaderReceive(JSONObject jsonMsg) throws IOException {
         switch (jsonMsg.getString("type")) {
+            case "replyToAppend":
+                this.lastFollowerReply = System.currentTimeMillis();
+                break;
+            case "rapidAppendEntry":
+                for (int i = jsonMsg.getInt("commitIndex"); i < this.logEntry.size(); i++) {
+                    // start from followers commit index up to leaders commit index
+                    JSONObject appendEntry = new JSONObject()
+                            .put("src", this.id)
+                            .put("dst", jsonMsg.getString("src"))
+                            .put("type", "AppendEntry")
+                            .put("leader", this.id)
+                            .put("MID", "LEADERMID")
+                            .put("key", this.logEntry.get(i).key)
+                            .put("value", this.logEntry.get(i).value)
+                            .put("term", this.currentTerm)
+                            .put("commitIndex", this.logEntry.size());
+                    this.send(appendEntry.toString());
+                }
+                this.lastFollowerReply = System.currentTimeMillis();
+                break;
             case "put":
+                //this.commitIndex++;
+                this.logEntry.add(new Entry( jsonMsg.getString("key"), jsonMsg.getString("value"))); // add to log
+                this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
                 JSONObject appendEntry = new JSONObject()
                         .put("src", this.id)
                         .put("dst", BROADCAST)
                         .put("type", "AppendEntry")
                         .put("leader", this.id)
                         .put("MID", "LEADERMID")
-                        //.put("entries", this.database)
                         .put("key", jsonMsg.getString("key"))
                         .put("value", jsonMsg.getString("value"))
                         .put("term", this.currentTerm)
-                        .put("commitIndex", this.log.size()+1);
+                        .put("commitIndex", this.logEntry.size());
                 this.send(appendEntry.toString());
-                this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
                 JSONObject putJson = new JSONObject()
-                    .put("src", this.id)
-                    .put("dst", jsonMsg.getString("src"))
-                    .put("leader", this.id)
-                    .put("type", "ok")
-                    .put("MID", jsonMsg.getString("MID"));
+                        .put("src", this.id)
+                        .put("dst", jsonMsg.getString("src"))
+                        .put("leader", this.id)
+                        .put("type", "ok")
+                        .put("MID", jsonMsg.getString("MID"));
                 this.send(putJson.toString());
                 break;
             case "get":
@@ -262,20 +357,57 @@ public class RaftNode {
                 }
                 break;
             case "AppendEntry":
-                // if leader receives append entry with higher term then set that as leader and move to follower state
-                if (jsonMsg.getInt("term") > currentTerm) {
+                // if leader receives append entry with higher term and equal/higher commit index then set that as leader and move to follower state
+                if (jsonMsg.getInt("term") > currentTerm && jsonMsg.getInt("commitIndex") >= this.logEntry.size()) {
                     this.state = State.FOLLOWER;
                     this.leader = jsonMsg.getString("src");
                     this.currentTerm = jsonMsg.getInt("term");
                     this.lastHeartbeat = System.currentTimeMillis();
-                } else if (jsonMsg.getInt("term") == currentTerm) {
-                    // if a leader receives a heartbeat and it has the same current term, increase leaders current term
-                    // to stay leader for now
+                    updateLog(jsonMsg);
+                } else if (jsonMsg.getInt("term") >= currentTerm && jsonMsg.getInt("commitIndex") < this.logEntry.size()) {
+                    // if leader receives append entry with lower commit index and equal term, we should be
+                    // the leader so increase our term
+                    this.currentTerm = jsonMsg.getInt("term") + 1;
+                } else if (jsonMsg.getInt("term") <= currentTerm && jsonMsg.getInt("commitIndex") > this.logEntry.size()) {
+                    // if leader receives commit index that is higher than our commit index, that should be the leader
+                    this.state = State.FOLLOWER;
+                    this.leader = jsonMsg.getString("src");
+                    this.currentTerm = jsonMsg.getInt("term");
                     this.lastHeartbeat = System.currentTimeMillis();
-                    this.currentTerm++;
+                    updateLog(jsonMsg);
                 }
             default:
                 // do nothing for now
+        }
+    }
+
+    /**
+     * Updates the RaftNode's log with the most up-to-date log entries according to commitIndex
+     * @param jsonMsg
+     * @throws IOException
+     */
+    private void updateLog(JSONObject jsonMsg) throws IOException {
+        if (jsonMsg.getInt("commitIndex") > this.logEntry.size()) {
+            // new commit received
+
+            // add to our database
+            if (!Objects.equals(jsonMsg.get("key"), "")) {
+                this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
+                this.logEntry.add(new Entry( jsonMsg.getString("key"), jsonMsg.getString("value")));
+            }
+
+            // we are behind a couple commits (more than 1 behind which is normal)
+            if (jsonMsg.getInt("commitIndex") > this.logEntry.size()) {
+                JSONObject rapidAppendEntry = new JSONObject()
+                        .put("src", this.id)
+                        .put("dst", this.leader)
+                        .put("leader", this.leader)
+                        .put("type", "rapidAppendEntry")
+                        .put("MID", "FOLLOWERMID")
+                        .put("term", this.currentTerm)
+                        .put("commitIndex", this.logEntry.size()); // send our current index to get new logs
+                this.send(rapidAppendEntry.toString());
+            }
         }
     }
 
