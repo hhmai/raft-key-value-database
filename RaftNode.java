@@ -126,7 +126,8 @@ public class RaftNode {
                 JSONObject jsonMsg = new JSONObject(msg);
                 //System.out.printf("Received message '%s'%n\n", msg);
                 //System.out.printf(this.id + " State = " + this.state + " Leader = " + this.leader
-                 //       + " Term = " + this.currentTerm + " Votes = " + this.votesReceived + System.lineSeparator());
+                  //      + " Term = " + this.currentTerm + " Votes = " + this.votesReceived +
+                    //    " Commit = " + this.logEntry.size() +System.lineSeparator());
                 if (state.equals(State.LEADER)) {
                     this.leaderReceive(jsonMsg);
                 } else if (state.equals(State.FOLLOWER)) {
@@ -357,6 +358,9 @@ public class RaftNode {
                 }
                 break;
             case "AppendEntry":
+                if (!Objects.equals(jsonMsg.get("key"), "")) {
+                    this.database.put(jsonMsg.getString("key"), jsonMsg.getString("value"));
+                }
                 // if leader receives append entry with higher term and equal/higher commit index then set that as leader and move to follower state
                 if (jsonMsg.getInt("term") > currentTerm && jsonMsg.getInt("commitIndex") >= this.logEntry.size()) {
                     this.state = State.FOLLOWER;
